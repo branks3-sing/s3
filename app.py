@@ -83,8 +83,8 @@ os.makedirs(lyrics_dir, exist_ok=True)
 os.makedirs(logo_dir, exist_ok=True)
 os.makedirs(shared_links_dir, exist_ok=True)
 
-# =============== CACHED FUNCTIONS FOR PERFORMANCE ===============
-@st.cache_data(ttl=5)  # Cache for 5 seconds
+# =============== ULTRA-FAST CACHED FUNCTIONS ===============
+@st.cache_data(ttl=10, show_spinner=False)  # Cache for 10 seconds, no spinner
 def get_song_files_cached():
     """Get list of song files with caching for faster loading"""
     songs = []
@@ -97,15 +97,31 @@ def get_song_files_cached():
             songs.append(song_name)
     return sorted(songs)
 
-@st.cache_data(ttl=5)
+@st.cache_data(ttl=10, show_spinner=False)
 def get_shared_links_cached():
     """Get shared links with caching"""
     return load_shared_links()
 
-@st.cache_data(ttl=5)
+@st.cache_data(ttl=10, show_spinner=False)
 def get_metadata_cached():
     """Get metadata with caching"""
     return load_metadata()
+
+# =============== FAST SONG FILE CHECK ===============
+@st.cache_data(ttl=30, show_spinner=False)
+def check_song_files_exist(song_name):
+    """Fast check if song files exist (cached)"""
+    original_path = os.path.join(songs_dir, f"{song_name}_original.mp3")
+    acc_path = os.path.join(songs_dir, f"{song_name}_accompaniment.mp3")
+    
+    lyrics_path = None
+    for ext in [".jpg", ".jpeg", ".png"]:
+        p = os.path.join(lyrics_dir, f"{song_name}_lyrics_bg{ext}")
+        if os.path.exists(p):
+            lyrics_path = p
+            break
+    
+    return os.path.exists(original_path) and os.path.exists(acc_path) and lyrics_path is not None
 
 # =============== PERSISTENT SESSION DATABASE ===============
 def init_session_db():
@@ -264,8 +280,10 @@ def load_metadata_from_db():
 # Initialize database
 init_session_db()
 
-# =============== HELPER FUNCTIONS ===============
-def file_to_base64(path):
+# =============== FAST HELPER FUNCTIONS ===============
+@st.cache_data(ttl=300, show_spinner=False)  # Cache for 5 minutes
+def get_file_to_base64_cached(path):
+    """Cached version of file_to_base64"""
     if os.path.exists(path):
         with open(path, "rb") as f:
             return base64.b64encode(f.read()).decode()
@@ -402,13 +420,28 @@ def check_and_create_session_id():
         import uuid
         st.session_state.session_id = str(uuid.uuid4())
 
-# =============== FAST SONG PLAYER NAVIGATION ===============
+# =============== ULTRA-FAST SONG PLAYER NAVIGATION ===============
 def open_song_player(song_name):
-    """Fast function to open song player"""
+    """Ultra-fast function to open song player"""
+    # Set session state first
     st.session_state.selected_song = song_name
     st.session_state.page = "Song Player"
-    st.query_params["song"] = quote(song_name)
+    
+    # Clear caches to ensure fresh data
+    get_song_files_cached.clear()
+    get_shared_links_cached.clear()
+    
+    # Save session and rerun
     save_session_to_db()
+    
+    # Use JavaScript for faster navigation (bypasses full Streamlit rerun)
+    js_code = f"""
+    <script>
+        window.history.pushState({{}}, '', '?song={quote(song_name)}');
+        window.location.reload();
+    </script>
+    """
+    html(js_code, height=0)
     st.rerun()
 
 # =============== FIXED: QUERY PARAMETER PROCESSING ===============
@@ -456,14 +489,17 @@ process_query_params()
 # Get cached metadata
 metadata = get_metadata_cached()
 
-# Logo
-default_logo_path = os.path.join(logo_dir, "branks3_logo.png")
-if not os.path.exists(default_logo_path):
-    # Don't show uploader on login page to avoid rerun issues
-    pass
-logo_b64 = file_to_base64(default_logo_path) if os.path.exists(default_logo_path) else ""
+# Logo - using cached version
+@st.cache_data(ttl=3600, show_spinner=False)  # Cache for 1 hour
+def get_logo_base64_cached():
+    default_logo_path = os.path.join(logo_dir, "branks3_logo.png")
+    if not os.path.exists(default_logo_path):
+        return ""
+    return get_file_to_base64_cached(default_logo_path)
 
-# =============== RESPONSIVE LOGIN PAGE (NO SCROLLING) ===============
+logo_b64 = get_logo_base64_cached()
+
+# =============== FAST LOGIN PAGE ===============
 if st.session_state.page == "Login":
     # Save session state
     save_session_to_db()
@@ -765,7 +801,7 @@ if st.session_state.page == "Login":
 
         st.markdown('</div></div>', unsafe_allow_html=True)
 
-# =============== ADMIN DASHBOARD ===============
+# =============== FAST ADMIN DASHBOARD ===============
 elif st.session_state.page == "Admin Dashboard" and st.session_state.role == "admin":
     # Auto-save session
     save_session_to_db()
@@ -877,6 +913,11 @@ elif st.session_state.page == "Admin Dashboard" and st.session_state.role == "ad
         color: #764ba2 !important;
         transform: scale(1.1);
     }
+    
+    /* FAST LOADING - NO ANIMATIONS */
+    .stButton > button {
+        transition: none !important;
+    }
     </style>
     """, unsafe_allow_html=True)
     
@@ -954,11 +995,10 @@ elif st.session_state.page == "Admin Dashboard" and st.session_state.role == "ad
                 get_metadata_cached.clear()
 
                 st.success(f"✅ Song Uploaded Successfully: {song_name}")
-                st.balloons()
                 time.sleep(1)
                 st.rerun()
 
-    # ================= SONGS LIST =================
+    # ================= ULTRA-FAST SONGS LIST =================
     elif page_sidebar == "Songs List":
         st.subheader("🎵 All Songs List (Admin View)")
         
@@ -984,24 +1024,25 @@ elif st.session_state.page == "Admin Dashboard" and st.session_state.role == "ad
             else:
                 st.warning("❌ No songs uploaded yet.")
         else:
-            # Clean layout with minimal styling
+            # ULTRA-FAST layout with minimal styling
             for idx, s in enumerate(uploaded_songs):
                 # Create columns for each song
                 col1, col2, col3 = st.columns([3, 1, 1])
                 
                 with col1:
-                    # Clickable song name - simple text
+                    # FAST Clickable song name - simple text with on_click
                     if st.button(
                         f"🎶 {s}",
                         key=f"song_name_{s}_{idx}",
                         help="Click to play song",
                         use_container_width=True,
-                        type="secondary"
+                        type="secondary",
+                        on_click=lambda song=s: open_song_player(song)
                     ):
-                        open_song_player(s)
+                        pass  # on_click handles it
                 
                 with col2:
-                    # Share link icon - using button with emoji
+                    # Share link icon
                     safe_s = quote(s)
                     share_url = f"{APP_URL}?song={safe_s}"
                     if st.button(
@@ -1013,7 +1054,7 @@ elif st.session_state.page == "Admin Dashboard" and st.session_state.role == "ad
                         st.info("Link copied to clipboard!")
                 
                 with col3:
-                    # Delete button - simple trash icon with minimal styling
+                    # Delete button
                     if st.button(
                         "🗑️",
                         key=f"delete_{s}_{idx}",
@@ -1145,7 +1186,7 @@ elif st.session_state.page == "Admin Dashboard" and st.session_state.role == "ad
         save_session_to_db()
         st.rerun()
 
-# =============== USER DASHBOARD ===============
+# =============== FAST USER DASHBOARD ===============
 elif st.session_state.page == "User Dashboard" and st.session_state.role == "user":
     # Auto-save session
     save_session_to_db()
@@ -1192,7 +1233,7 @@ elif st.session_state.page == "User Dashboard" and st.session_state.role == "use
     .clickable-song {
         cursor: pointer;
         padding: 12px 8px;
-        transition: all 0.2s ease;
+        transition: none !important;
         border-radius: 0px;
         background: transparent !important;
         border: none !important;
@@ -1205,6 +1246,11 @@ elif st.session_state.page == "User Dashboard" and st.session_state.role == "use
     .clickable-song:hover {
         background: rgba(255, 0, 102, 0.1) !important;
         transform: translateX(5px);
+    }
+    
+    /* FAST BUTTONS */
+    .stButton > button {
+        transition: none !important;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -1230,7 +1276,7 @@ elif st.session_state.page == "User Dashboard" and st.session_state.role == "use
             save_session_to_db()
             st.rerun()
 
-    # 🔹 MAIN CONTENT - UPDATED FOR MOBILE RESPONSIVE DESIGN
+    # 🔹 MAIN CONTENT - ULTRA-FAST SONG LISTING
     st.subheader("🎵 Available Songs (Only Shared Songs)")
     
     # SEARCH BAR WITH PLACEHOLDER
@@ -1260,19 +1306,20 @@ elif st.session_state.page == "User Dashboard" and st.session_state.role == "use
             st.warning("❌ No shared songs available. Contact admin to share songs.")
             st.info("👑 Only admin-shared songs appear here for users.")
     else:
-        # Simple list display
+        # ULTRA-FAST list display with on_click
         for idx, song in enumerate(uploaded_songs):
-            # Clickable song name
+            # Fast clickable song name with on_click
             if st.button(
                 f"✅ *{song}*",
                 key=f"user_song_{song}_{idx}",
                 help="Click to play song",
                 use_container_width=True,
-                type="secondary"
+                type="secondary",
+                on_click=lambda s=song: open_song_player(s)
             ):
-                open_song_player(song)
+                pass  # on_click handles it
 
-# =============== SONG PLAYER ===============
+# =============== FAST SONG PLAYER ===============
 elif st.session_state.page == "Song Player" and st.session_state.get("selected_song"):
     # Auto-save session
     save_session_to_db()
@@ -1313,6 +1360,11 @@ elif st.session_state.page == "Song Player" and st.session_state.get("selected_s
             margin: 5px !important;
         }
     }
+    
+    /* FAST BUTTONS */
+    .stButton > button {
+        transition: none !important;
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -1346,6 +1398,19 @@ elif st.session_state.page == "Song Player" and st.session_state.get("selected_s
         st.error("❌ Access denied!")
         st.stop()
 
+    # FAST FILE CHECK (cached)
+    if not check_song_files_exist(selected_song):
+        st.error(f"❌ Song files not found for: {selected_song}")
+        if st.button("← Go Back"):
+            if st.session_state.role == "admin":
+                st.session_state.page = "Admin Dashboard"
+            elif st.session_state.role == "user":
+                st.session_state.page = "User Dashboard"
+            save_session_to_db()
+            st.rerun()
+        st.stop()
+
+    # Get file paths
     original_path = os.path.join(songs_dir, f"{selected_song}_original.mp3")
     accompaniment_path = os.path.join(songs_dir, f"{selected_song}_accompaniment.mp3")
 
@@ -1356,11 +1421,12 @@ elif st.session_state.page == "Song Player" and st.session_state.get("selected_s
             lyrics_path = p
             break
 
-    original_b64 = file_to_base64(original_path)
-    accompaniment_b64 = file_to_base64(accompaniment_path)
-    lyrics_b64 = file_to_base64(lyrics_path)
+    # FAST base64 conversion (cached)
+    original_b64 = get_file_to_base64_cached(original_path)
+    accompaniment_b64 = get_file_to_base64_cached(accompaniment_path)
+    lyrics_b64 = get_file_to_base64_cached(lyrics_path) if lyrics_path else ""
 
-    # ✅ UPDATED KARAOKE TEMPLATE WITH MOBILE-FRIENDLY 9:16 DOWNLOAD AND CLEAR LOGO
+    # ✅ UPDATED KARAOKE TEMPLATE
     karaoke_template = """
 <!doctype html>
 <html>
@@ -1466,8 +1532,8 @@ button:active {
     width: 40px;
     height: 40px;
     z-index: 50; 
-    opacity: 1; /* CHANGED FROM 0.6 TO 1 FOR CLEAR LOGO */
-    filter: brightness(1.2); /* MAKE LOGO CLEARER */
+    opacity: 1;
+    filter: brightness(1.2);
 }
 canvas { 
     display: none; 
@@ -1516,7 +1582,7 @@ canvas {
   </div>
 </div>
 
-<canvas id="recordingCanvas" width="1080" height="1920"></canvas> <!-- CHANGED TO 9:16 ASPECT RATIO -->
+<canvas id="recordingCanvas" width="1080" height="1920"></canvas>
 
 <script>
 /* ================== GLOBAL STATE ================== */
@@ -1618,7 +1684,7 @@ function drawCanvas() {
     ctx.drawImage(mainBg, x, y, drawW, drawH);
 
     /* LOGO - CLEAR AND VISIBLE */
-    ctx.globalAlpha = 1; // FULL VISIBILITY
+    ctx.globalAlpha = 1;
     ctx.drawImage(logoImg, 100, 100, 100, 100);
     ctx.globalAlpha = 1;
 
@@ -1667,7 +1733,7 @@ recordBtn.onclick = async () => {
     mediaRecorder.onstop = () => {
         cancelAnimationFrame(canvasRafId);
 
-        const blob = new Blob(recordedChunks, { type: "video/mp4" }); // CHANGED TO MP4
+        const blob = new Blob(recordedChunks, { type: "video/mp4" });
         const url = URL.createObjectURL(blob);
 
         if (lastRecordingURL) URL.revokeObjectURL(lastRecordingURL);
@@ -1708,12 +1774,12 @@ recordBtn.onclick = async () => {
     status.innerText = "🎙 Recording...";
     
     // ✅ AUTOMATIC STOP: Set timeout to stop recording when song ends
-    const songDuration = originalAudio.duration * 1000; // Convert to milliseconds
+    const songDuration = originalAudio.duration * 1000;
     setTimeout(() => {
         if (isRecording) {
-            stopBtn.click(); // Automatically click stop button
+            stopBtn.click();
         }
-    }, songDuration + 500); // Add 500ms buffer
+    }, songDuration + 500);
 };
 
 /* ================== STOP ================== */
@@ -1769,7 +1835,6 @@ newRecordingBtn.onclick = () => {
 /* ================== SONG END DETECTION ================== */
 originalAudio.addEventListener('ended', () => {
     if (isRecording) {
-        // If recording is still active when song ends, stop it
         setTimeout(() => {
             if (isRecording) {
                 stopBtn.click();
@@ -1780,7 +1845,6 @@ originalAudio.addEventListener('ended', () => {
 
 accompanimentAudio.addEventListener('ended', () => {
     if (isRecording) {
-        // If recording is still active when accompaniment ends, stop it
         setTimeout(() => {
             if (isRecording) {
                 stopBtn.click();
@@ -1830,7 +1894,7 @@ else:
     save_session_to_db()
     st.rerun()
 
-# =============== DEBUG INFO (Hidden by default) ===============
+# =============== DEBUG INFO ===============
 with st.sidebar:
     if st.session_state.get("role") == "admin":
         if st.checkbox("Show Debug Info", key="debug_toggle"):
