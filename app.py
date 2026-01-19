@@ -8,11 +8,59 @@ from urllib.parse import unquote, quote
 import time
 import sqlite3
 from datetime import datetime
+import shutil
+from PIL import Image
+import requests
+from io import BytesIO
 
-st.set_page_config(page_title="𝄞 sing-along", layout="wide")
+# =============== LOGO DOWNLOAD AND LOADING ===============
+def ensure_logo_exists():
+    """Ensure logo exists locally, download from GitHub if not"""
+    logo_dir = os.path.join(os.getcwd(), "media", "logo")
+    os.makedirs(logo_dir, exist_ok=True)
+    
+    logo_path = os.path.join(logo_dir, "logoo.png")
+    
+    # If logo doesn't exist locally, try to download from GitHub
+    if not os.path.exists(logo_path):
+        try:
+            logo_url = "https://github.com/Swarna-0/karaoke_songs-/raw/main/media/logo/logoo.png"
+            response = requests.get(logo_url, timeout=10)
+            if response.status_code == 200:
+                with open(logo_path, "wb") as f:
+                    f.write(response.content)
+                print(f"✅ Logo downloaded from GitHub")
+            else:
+                # Create a simple placeholder logo
+                img = Image.new('RGB', (512, 512), color='#1E3A8A')
+                d = ImageDraw.Draw(img)
+                d.text((200, 220), "🎤", fill='white', font_size=100)
+                img.save(logo_path, 'PNG')
+                print(f"✅ Created placeholder logo")
+        except Exception as e:
+            print(f"⚠️ Could not download logo: {e}")
+            # Create a minimal placeholder
+            with open(logo_path, 'wb') as f:
+                f.write(b'')
+    
+    return logo_path
+
+# Try to load logo for page icon
+try:
+    logo_path = ensure_logo_exists()
+    page_icon = Image.open(logo_path)
+except:
+    page_icon = "𝄞"  # Fallback to emoji if logo fails
+
+# Set page config with logo as icon
+st.set_page_config(
+    page_title=" Sing Along",
+    page_icon=page_icon,
+    layout="wide"
+)
 
 # --------- CONFIG: set your deployed app URL here ----------
-APP_URL = "http://54.252.242.23:8000/"
+APP_URL = "www.branks3.com"
 
 # 🔒 SECURITY: Environment Variables for Password Hashes
 ADMIN_HASH = os.getenv("ADMIN_HASH", "")
@@ -34,6 +82,30 @@ os.makedirs(songs_dir, exist_ok=True)
 os.makedirs(lyrics_dir, exist_ok=True)
 os.makedirs(logo_dir, exist_ok=True)
 os.makedirs(shared_links_dir, exist_ok=True)
+
+# =============== CACHED FUNCTIONS FOR PERFORMANCE ===============
+@st.cache_data(ttl=5)  # Cache for 5 seconds
+def get_song_files_cached():
+    """Get list of song files with caching for faster loading"""
+    songs = []
+    if not os.path.exists(songs_dir):
+        return songs
+    
+    for f in os.listdir(songs_dir):
+        if f.endswith("_original.mp3"):
+            song_name = f.replace("_original.mp3", "")
+            songs.append(song_name)
+    return sorted(songs)
+
+@st.cache_data(ttl=5)
+def get_shared_links_cached():
+    """Get shared links with caching"""
+    return load_shared_links()
+
+@st.cache_data(ttl=5)
+def get_metadata_cached():
+    """Get metadata with caching"""
+    return load_metadata()
 
 # =============== PERSISTENT SESSION DATABASE ===============
 def init_session_db():
@@ -162,6 +234,17 @@ def save_metadata_to_db(song_name, uploaded_by):
     except:
         pass
 
+def delete_metadata_from_db(song_name):
+    """Delete metadata from database"""
+    try:
+        conn = sqlite3.connect(session_db_path)
+        c = conn.cursor()
+        c.execute('DELETE FROM metadata WHERE song_name = ?', (song_name,))
+        conn.commit()
+        conn.close()
+    except:
+        pass
+
 def load_metadata_from_db():
     """Load metadata from database"""
     metadata = {}
@@ -217,6 +300,22 @@ def save_metadata(data):
         uploaded_by = info.get("uploaded_by", "unknown")
         save_metadata_to_db(song_name, uploaded_by)
 
+def delete_metadata(song_name):
+    """Delete metadata from both file and database"""
+    # Load existing metadata
+    metadata = load_metadata()
+    
+    # Remove from metadata
+    if song_name in metadata:
+        del metadata[song_name]
+    
+    # Save updated metadata to file
+    with open(metadata_path, "w") as f:
+        json.dump(metadata, f, indent=2)
+    
+    # Delete from database
+    delete_metadata_from_db(song_name)
+
 def load_shared_links():
     """Load shared links from both file and database"""
     file_links = {}
@@ -261,24 +360,56 @@ def delete_shared_link(song_name):
 
 def get_uploaded_songs(show_unshared=False):
     """Get list of uploaded songs"""
-    songs = []
-    if not os.path.exists(songs_dir):
-        return songs
-    
-    shared_links = load_shared_links()
-    
-    for f in os.listdir(songs_dir):
-        if f.endswith("_original.mp3"):
-            song_name = f.replace("_original.mp3", "")
-            if show_unshared or song_name in shared_links:
-                songs.append(song_name)
-    return sorted(songs)
+    return get_song_files_cached()
+
+def delete_song_files(song_name):
+    """Delete all files related to a song"""
+    try:
+        # Delete original song file
+        original_path = os.path.join(songs_dir, f"{song_name}_original.mp3")
+        if os.path.exists(original_path):
+            os.remove(original_path)
+        
+        # Delete accompaniment file
+        acc_path = os.path.join(songs_dir, f"{song_name}_accompaniment.mp3")
+        if os.path.exists(acc_path):
+            os.remove(acc_path)
+        
+        # Delete lyrics image files
+        for ext in [".jpg", ".jpeg", ".png"]:
+            lyrics_path = os.path.join(lyrics_dir, f"{song_name}_lyrics_bg{ext}")
+            if os.path.exists(lyrics_path):
+                os.remove(lyrics_path)
+        
+        # Delete shared link file
+        shared_link_path = os.path.join(shared_links_dir, f"{song_name}.json")
+        if os.path.exists(shared_link_path):
+            os.remove(shared_link_path)
+        
+        # Clear cache
+        get_song_files_cached.clear()
+        get_shared_links_cached.clear()
+        get_metadata_cached.clear()
+        
+        return True
+    except Exception as e:
+        st.error(f"Error deleting song files: {e}")
+        return False
 
 def check_and_create_session_id():
     """Create unique session ID if not exists"""
     if 'session_id' not in st.session_state:
         import uuid
         st.session_state.session_id = str(uuid.uuid4())
+
+# =============== FAST SONG PLAYER NAVIGATION ===============
+def open_song_player(song_name):
+    """Fast function to open song player"""
+    st.session_state.selected_song = song_name
+    st.session_state.page = "Song Player"
+    st.query_params["song"] = quote(song_name)
+    save_session_to_db()
+    st.rerun()
 
 # =============== FIXED: QUERY PARAMETER PROCESSING ===============
 def process_query_params():
@@ -313,6 +444,8 @@ if "selected_song" not in st.session_state:
     st.session_state.selected_song = None
 if "search_query" not in st.session_state:
     st.session_state.search_query = ""
+if "confirm_delete" not in st.session_state:
+    st.session_state.confirm_delete = None
 
 # Load persistent session data
 load_session_from_db()
@@ -320,7 +453,8 @@ load_session_from_db()
 # Process query parameters FIRST
 process_query_params()
 
-metadata = load_metadata()
+# Get cached metadata
+metadata = get_metadata_cached()
 
 # Logo
 default_logo_path = os.path.join(logo_dir, "branks3_logo.png")
@@ -684,68 +818,64 @@ elif st.session_state.page == "Admin Dashboard" and st.session_state.role == "ad
         }
     }
     
-    /* BUTTON ROW STYLES FOR ADMIN DASHBOARD */
-    .button-row {
+    /* DELETE BUTTON STYLING - NO BACKGROUND, NO BORDER, NO PADDING */
+    .delete-button {
+        background: transparent !important;
+        border: none !important;
+        padding: 0 !important;
+        margin: 0 !important;
+        min-width: auto !important;
+        width: auto !important;
+        color: #ff4444 !important;
+        font-size: 20px !important;
+        box-shadow: none !important;
+    }
+    
+    .delete-button:hover {
+        background: transparent !important;
+        color: #ff0000 !important;
+        transform: scale(1.1);
+    }
+    
+    /* SONG LIST ITEMS - CLEAN LAYOUT */
+    .song-item-row {
         display: flex;
-        flex-wrap: nowrap;
-        gap: 4px !important;
         align-items: center;
-        margin-top: 0px !important;
-        margin-bottom: 0px !important;
-        padding: 0px !important;
+        margin-bottom: 4px !important;
+        padding: 0 !important;
+        background: transparent !important;
     }
     
-    .button-row button {
-        min-width: 40px !important;
-        width: 40px !important;
-        height: 32px !important;
-        padding: 0px !important;
-        margin: 0px !important;
-        font-size: 16px !important;
+    /* PLAY BUTTON STYLING */
+    .play-button {
+        background: transparent !important;
+        border: none !important;
+        color: #4CAF50 !important;
+        text-align: left !important;
+        padding: 0 !important;
+        margin: 0 !important;
+        width: 100% !important;
     }
     
-    /* Song item styling */
-    .song-item {
-        display: flex;
-        align-items: center;
-        margin-bottom: 8px;
-        padding: 8px;
-        background: rgba(5,10,25,0.1);
-        border-radius: 8px;
-        border-left: 4px solid #ff0066;
+    .play-button:hover {
+        background: rgba(76, 175, 80, 0.1) !important;
     }
     
-    .song-name-col {
-        flex-grow: 1;
-        padding-right: 10px;
+    /* SHARE BUTTON STYLING */
+    .share-link-button {
+        background: transparent !important;
+        border: none !important;
+        padding: 0 !important;
+        margin: 0 !important;
+        min-width: auto !important;
+        width: auto !important;
+        color: #667eea !important;
+        font-size: 20px !important;
     }
     
-    .button-col {
-        flex-shrink: 0;
-        white-space: nowrap;
-    }
-    
-    @media (max-width: 768px) {
-        .button-row button {
-            min-width: 36px !important;
-            width: 36px !important;
-            height: 28px !important;
-            font-size: 14px !important;
-        }
-        
-        .song-item {
-            flex-direction: column;
-            align-items: stretch;
-        }
-        
-        .song-name-col {
-            margin-bottom: 8px;
-            padding-right: 0;
-        }
-        
-        .button-col {
-            width: 100%;
-        }
+    .share-link-button:hover {
+        color: #764ba2 !important;
+        transform: scale(1.1);
     }
     </style>
     """, unsafe_allow_html=True)
@@ -812,11 +942,16 @@ elif st.session_state.page == "Admin Dashboard" and st.session_state.role == "ad
                 with open(lyrics_path, "wb") as f:
                     f.write(uploaded_lyrics_image.getbuffer())
 
+                metadata = get_metadata_cached()
                 metadata[song_name] = {
                     "uploaded_by": st.session_state.user,
                     "timestamp": str(time.time())
                 }
                 save_metadata(metadata)
+
+                # Clear cache
+                get_song_files_cached.clear()
+                get_metadata_cached.clear()
 
                 st.success(f"✅ Song Uploaded Successfully: {song_name}")
                 st.balloons()
@@ -836,7 +971,7 @@ elif st.session_state.page == "Admin Dashboard" and st.session_state.role == "ad
         )
         st.session_state.search_query = search_query
         
-        uploaded_songs = get_uploaded_songs(show_unshared=True)
+        uploaded_songs = get_song_files_cached()
         
         # Filter songs based on search query
         if search_query:
@@ -849,48 +984,82 @@ elif st.session_state.page == "Admin Dashboard" and st.session_state.role == "ad
             else:
                 st.warning("❌ No songs uploaded yet.")
         else:
-            # Simple display without containers, dividers or cards
+            # Clean layout with minimal styling
             for idx, s in enumerate(uploaded_songs):
                 # Create columns for each song
-                col1, col2 = st.columns([4, 1])
+                col1, col2, col3 = st.columns([3, 1, 1])
                 
                 with col1:
-                    # Clickable song name without container styling
-                    if st.button(f"🎶 *{s}* — by {metadata.get(s, {}).get('uploaded_by', 'Unknown')}", 
-                                key=f"song_name_{s}_{idx}",
-                                help="Click to play song",
-                                use_container_width=True):
-                        st.session_state.selected_song = s
-                        st.session_state.page = "Song Player"
-                        st.query_params["song"] = quote(s)
-                        save_session_to_db()
-                        st.rerun()
+                    # Clickable song name - simple text
+                    if st.button(
+                        f"🎶 {s}",
+                        key=f"song_name_{s}_{idx}",
+                        help="Click to play song",
+                        use_container_width=True,
+                        type="secondary"
+                    ):
+                        open_song_player(s)
                 
                 with col2:
-                    # Share link button only
+                    # Share link icon - using button with emoji
                     safe_s = quote(s)
                     share_url = f"{APP_URL}?song={safe_s}"
-                    st.markdown(f"""
-                    <a href="{share_url}" target="_blank" style="
-                        display: inline-block;
-                        width: 40px;
-                        height: 32px;
-                        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                        color: white;
-                        text-align: center;
-                        line-height: 32px;
-                        border-radius: 4px;
-                        text-decoration: none;
-                        font-size: 16px;
-                        float: right;
-                    " title="Share Link">🔗</a>
-                    """, unsafe_allow_html=True)
+                    if st.button(
+                        "🔗",
+                        key=f"share_icon_{s}_{idx}",
+                        help="Share link"
+                    ):
+                        st.markdown(f"Share URL: {share_url}")
+                        st.info("Link copied to clipboard!")
+                
+                with col3:
+                    # Delete button - simple trash icon with minimal styling
+                    if st.button(
+                        "🗑️",
+                        key=f"delete_{s}_{idx}",
+                        help="Delete song"
+                    ):
+                        st.session_state.confirm_delete = s
+                        st.rerun()
+            
+            # Confirmation dialog for deletion
+            if st.session_state.confirm_delete:
+                song_to_delete = st.session_state.confirm_delete
+                st.warning(f"⚠️ Are you sure you want to delete **{song_to_delete}**?")
+                
+                col_confirm, col_cancel = st.columns(2)
+                with col_confirm:
+                    if st.button("✅ Yes, Delete", type="primary"):
+                        # Delete song files
+                        if delete_song_files(song_to_delete):
+                            # Delete metadata
+                            delete_metadata(song_to_delete)
+                            # Delete shared link if exists
+                            delete_shared_link(song_to_delete)
+                            
+                            st.success(f"✅ Song '{song_to_delete}' deleted successfully!")
+                            st.session_state.confirm_delete = None
+                            
+                            # Clear all caches
+                            get_song_files_cached.clear()
+                            get_shared_links_cached.clear()
+                            get_metadata_cached.clear()
+                            
+                            time.sleep(1)
+                            st.rerun()
+                        else:
+                            st.error(f"❌ Failed to delete song '{song_to_delete}'")
+                
+                with col_cancel:
+                    if st.button("❌ Cancel", type="secondary"):
+                        st.session_state.confirm_delete = None
+                        st.rerun()
 
     # ================= SHARE LINKS =================
     elif page_sidebar == "Share Links":
         st.header("🔗 Manage Shared Links")
 
-        all_songs = get_uploaded_songs(show_unshared=True)
+        all_songs = get_song_files_cached()
         
         # SEARCH BAR WITH PLACEHOLDER
         search_query = st.text_input(
@@ -906,7 +1075,7 @@ elif st.session_state.page == "Admin Dashboard" and st.session_state.role == "ad
             all_songs = [song for song in all_songs 
                         if search_query.lower() in song.lower()]
         
-        shared_links_data = load_shared_links()
+        shared_links_data = get_shared_links_cached()
 
         if not all_songs:
             if search_query:
@@ -914,7 +1083,7 @@ elif st.session_state.page == "Admin Dashboard" and st.session_state.role == "ad
             else:
                 st.warning("❌ No songs available to share.")
         else:
-            # Simple display without containers, dividers or cards
+            # Simple display
             for song in all_songs:
                 # Create columns for each song
                 col1, col2 = st.columns([3, 1])
@@ -923,16 +1092,17 @@ elif st.session_state.page == "Admin Dashboard" and st.session_state.role == "ad
                     safe_song = quote(song)
                     is_shared = song in shared_links_data
                     status = "✅ SHARED" if is_shared else "❌ NOT SHARED"
-                    st.write(f"{song}** - {status}")
+                    st.write(f"**{song}** - {status}")
                 
                 with col2:
-                    # Create buttons in a single line
+                    # Create buttons
                     col_toggle, col_action = st.columns(2)
                     
                     with col_toggle:
                         if is_shared:
                             if st.button("🚫", key=f"unshare_{song}", help="Unshare"):
                                 delete_shared_link(song)
+                                get_shared_links_cached.clear()
                                 st.success(f"✅ {song} unshared!")
                                 time.sleep(0.5)
                                 st.rerun()
@@ -942,6 +1112,7 @@ elif st.session_state.page == "Admin Dashboard" and st.session_state.role == "ad
                                     song,
                                     {"shared_by": st.session_state.user, "active": True}
                                 )
+                                get_shared_links_cached.clear()
                                 share_url = f"{APP_URL}?song={safe_song}"
                                 st.success(f"✅ {song} shared!\n{share_url}")
                                 time.sleep(0.5)
@@ -955,8 +1126,8 @@ elif st.session_state.page == "Admin Dashboard" and st.session_state.role == "ad
                                 display: inline-block;
                                 width: 40px;
                                 height: 32px;
-                                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                                color: white;
+                                background: transparent;
+                                color: #667eea;
                                 text-align: center;
                                 line-height: 32px;
                                 border-radius: 4px;
@@ -1047,6 +1218,9 @@ elif st.session_state.page == "User Dashboard" and st.session_state.role == "use
         st.markdown("### Quick Actions")
         
         if st.button("🔄 Refresh Songs List", key="user_refresh"):
+            # Clear caches for refresh
+            get_song_files_cached.clear()
+            get_shared_links_cached.clear()
             st.rerun()
             
         if st.button("Logout", key="user_sidebar_logout"):
@@ -1068,7 +1242,11 @@ elif st.session_state.page == "User Dashboard" and st.session_state.role == "use
     )
     st.session_state.search_query = search_query
     
-    uploaded_songs = get_uploaded_songs(show_unshared=False)
+    all_songs = get_song_files_cached()
+    shared_links = get_shared_links_cached()
+    
+    # Filter only shared songs
+    uploaded_songs = [song for song in all_songs if song in shared_links]
     
     # Filter songs based on search query
     if search_query:
@@ -1082,9 +1260,9 @@ elif st.session_state.page == "User Dashboard" and st.session_state.role == "use
             st.warning("❌ No shared songs available. Contact admin to share songs.")
             st.info("👑 Only admin-shared songs appear here for users.")
     else:
-        # Simple list display - no containers, no dividers, no cards
+        # Simple list display
         for idx, song in enumerate(uploaded_songs):
-            # Clickable song name without any containers or borders
+            # Clickable song name
             if st.button(
                 f"✅ *{song}*",
                 key=f"user_song_{song}_{idx}",
@@ -1092,11 +1270,7 @@ elif st.session_state.page == "User Dashboard" and st.session_state.role == "use
                 use_container_width=True,
                 type="secondary"
             ):
-                st.session_state.selected_song = song
-                st.session_state.page = "Song Player"
-                st.query_params["song"] = quote(song)
-                save_session_to_db()
-                st.rerun()
+                open_song_player(song)
 
 # =============== SONG PLAYER ===============
 elif st.session_state.page == "Song Player" and st.session_state.get("selected_song"):
@@ -1157,7 +1331,7 @@ elif st.session_state.page == "Song Player" and st.session_state.get("selected_s
         st.stop()
 
     # Double-check access permission
-    shared_links = load_shared_links()
+    shared_links = get_shared_links_cached()
     is_shared = selected_song in shared_links
     is_admin = st.session_state.role == "admin"
     is_guest = st.session_state.role == "guest"
@@ -1625,35 +1799,30 @@ accompanimentAudio.addEventListener('ended', () => {
     karaoke_html = karaoke_html.replace("%%ACCOMP_B64%%", accompaniment_b64 or "")
     karaoke_html = karaoke_html.replace("%%SONG_NAME%%", selected_song)
 
-    # ✅ BACK BUTTON LOGIC - Important changes here
-    # Display back button ONLY for admin or user, NOT for guest
+    # ✅ BACK BUTTON LOGIC
     if st.session_state.role in ["admin", "user"]:
-        # Add back button ONLY for logged-in users
         col1, col2 = st.columns([5, 1])
         with col2:
             if st.button("← Back to Dashboard", key="back_player"):
                 if st.session_state.role == "admin":
                     st.session_state.page = "Admin Dashboard"
-                    st.session_state.selected_song = None  # Clear song selection
+                    st.session_state.selected_song = None
                 elif st.session_state.role == "user":
                     st.session_state.page = "User Dashboard"
-                    st.session_state.selected_song = None  # Clear song selection
+                    st.session_state.selected_song = None
                 
-                # Clear song from query params when going back to dashboard
                 if "song" in st.query_params:
                     del st.query_params["song"]
                 
                 save_session_to_db()
                 st.rerun()
     else:
-        # For guest users, no back button - display empty space
         st.empty()
 
     html(karaoke_html, height=800, width=1920, scrolling=False)
 
 # =============== FALLBACK ===============
 else:
-    # If song exists in URL, NEVER redirect to login
     if "song" in st.query_params:
         st.session_state.page = "Song Player"
     else:
