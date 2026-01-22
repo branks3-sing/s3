@@ -9,7 +9,7 @@ import time
 import sqlite3
 from datetime import datetime
 import shutil
-from PIL import Image
+from PIL import Image, ImageDraw
 import requests
 from io import BytesIO
 
@@ -83,8 +83,8 @@ os.makedirs(lyrics_dir, exist_ok=True)
 os.makedirs(logo_dir, exist_ok=True)
 os.makedirs(shared_links_dir, exist_ok=True)
 
-# =============== CACHED FUNCTIONS FOR PERFORMANCE ===============
-@st.cache_data(ttl=5)  # Cache for 5 seconds
+# =============== OPTIMIZED CACHED FUNCTIONS FOR PERFORMANCE ===============
+@st.cache_data(ttl=10, show_spinner=False)  # Longer TTL, no spinner for faster loading
 def get_song_files_cached():
     """Get list of song files with caching for faster loading"""
     songs = []
@@ -97,21 +97,21 @@ def get_song_files_cached():
             songs.append(song_name)
     return sorted(songs)
 
-@st.cache_data(ttl=5)
+@st.cache_data(ttl=10, show_spinner=False)
 def get_shared_links_cached():
     """Get shared links with caching"""
     return load_shared_links()
 
-@st.cache_data(ttl=5)
+@st.cache_data(ttl=10, show_spinner=False)
 def get_metadata_cached():
     """Get metadata with caching"""
     return load_metadata()
 
-# =============== PERSISTENT SESSION DATABASE ===============
+# =============== OPTIMIZED PERSISTENT SESSION DATABASE ===============
 def init_session_db():
     """Initialize SQLite database for persistent sessions"""
     try:
-        conn = sqlite3.connect(session_db_path)
+        conn = sqlite3.connect(session_db_path, check_same_thread=False)
         c = conn.cursor()
         c.execute('''CREATE TABLE IF NOT EXISTS sessions
                      (session_id TEXT PRIMARY KEY,
@@ -135,23 +135,25 @@ def init_session_db():
         pass
 
 def save_session_to_db():
-    """Save current session to database"""
+    """Save current session to database - optimized with minimal operations"""
     try:
-        conn = sqlite3.connect(session_db_path)
-        c = conn.cursor()
-        session_id = st.session_state.get('session_id', 'default')
-        
-        c.execute('''INSERT OR REPLACE INTO sessions 
-                     (session_id, user, role, page, selected_song, last_active)
-                     VALUES (?, ?, ?, ?, ?, ?)''',
-                  (session_id,
-                   st.session_state.get('user'),
-                   st.session_state.get('role'),
-                   st.session_state.get('page'),
-                   st.session_state.get('selected_song'),
-                   datetime.now()))
-        conn.commit()
-        conn.close()
+        # Only save if not in quick navigation mode
+        if not st.session_state.get('quick_nav', False):
+            conn = sqlite3.connect(session_db_path, check_same_thread=False)
+            c = conn.cursor()
+            session_id = st.session_state.get('session_id', 'default')
+            
+            c.execute('''INSERT OR REPLACE INTO sessions 
+                         (session_id, user, role, page, selected_song, last_active)
+                         VALUES (?, ?, ?, ?, ?, ?)''',
+                      (session_id,
+                       st.session_state.get('user'),
+                       st.session_state.get('role'),
+                       st.session_state.get('page'),
+                       st.session_state.get('selected_song'),
+                       datetime.now()))
+            conn.commit()
+            conn.close()
     except:
         pass
 
@@ -159,7 +161,7 @@ def load_session_from_db():
     """Load session from database"""
     try:
         session_id = st.session_state.get('session_id', 'default')
-        conn = sqlite3.connect(session_db_path)
+        conn = sqlite3.connect(session_db_path, check_same_thread=False)
         c = conn.cursor()
         c.execute('SELECT user, role, page, selected_song FROM sessions WHERE session_id = ?', 
                   (session_id,))
@@ -182,7 +184,7 @@ def load_session_from_db():
 def save_shared_link_to_db(song_name, shared_by):
     """Save shared link to database"""
     try:
-        conn = sqlite3.connect(session_db_path)
+        conn = sqlite3.connect(session_db_path, check_same_thread=False)
         c = conn.cursor()
         c.execute('''INSERT OR REPLACE INTO shared_links 
                      (song_name, shared_by, active, created_at)
@@ -196,7 +198,7 @@ def save_shared_link_to_db(song_name, shared_by):
 def delete_shared_link_from_db(song_name):
     """Delete shared link from database"""
     try:
-        conn = sqlite3.connect(session_db_path)
+        conn = sqlite3.connect(session_db_path, check_same_thread=False)
         c = conn.cursor()
         c.execute('DELETE FROM shared_links WHERE song_name = ?', (song_name,))
         conn.commit()
@@ -208,7 +210,7 @@ def load_shared_links_from_db():
     """Load shared links from database"""
     links = {}
     try:
-        conn = sqlite3.connect(session_db_path)
+        conn = sqlite3.connect(session_db_path, check_same_thread=False)
         c = conn.cursor()
         c.execute('SELECT song_name, shared_by FROM shared_links WHERE active = 1')
         results = c.fetchall()
@@ -223,7 +225,7 @@ def load_shared_links_from_db():
 def save_metadata_to_db(song_name, uploaded_by):
     """Save metadata to database"""
     try:
-        conn = sqlite3.connect(session_db_path)
+        conn = sqlite3.connect(session_db_path, check_same_thread=False)
         c = conn.cursor()
         c.execute('''INSERT OR REPLACE INTO metadata 
                      (song_name, uploaded_by, timestamp)
@@ -237,7 +239,7 @@ def save_metadata_to_db(song_name, uploaded_by):
 def delete_metadata_from_db(song_name):
     """Delete metadata from database"""
     try:
-        conn = sqlite3.connect(session_db_path)
+        conn = sqlite3.connect(session_db_path, check_same_thread=False)
         c = conn.cursor()
         c.execute('DELETE FROM metadata WHERE song_name = ?', (song_name,))
         conn.commit()
@@ -249,7 +251,7 @@ def load_metadata_from_db():
     """Load metadata from database"""
     metadata = {}
     try:
-        conn = sqlite3.connect(session_db_path)
+        conn = sqlite3.connect(session_db_path, check_same_thread=False)
         c = conn.cursor()
         c.execute('SELECT song_name, uploaded_by FROM metadata')
         results = c.fetchall()
@@ -402,13 +404,26 @@ def check_and_create_session_id():
         import uuid
         st.session_state.session_id = str(uuid.uuid4())
 
-# =============== FAST SONG PLAYER NAVIGATION ===============
+# =============== ULTRA-FAST SONG PLAYER NAVIGATION ===============
 def open_song_player(song_name):
-    """Fast function to open song player"""
+    """Ultra-fast function to open song player - optimized for speed"""
+    # Set quick navigation flag to bypass heavy database operations
+    st.session_state.quick_nav = True
+    
+    # Direct state update (fastest)
     st.session_state.selected_song = song_name
     st.session_state.page = "Song Player"
-    st.query_params["song"] = quote(song_name)
-    save_session_to_db()
+    
+    # Set query params (async operation)
+    try:
+        st.query_params["song"] = quote(song_name)
+    except:
+        pass
+    
+    # Clear quick nav flag after rerun
+    st.session_state.quick_nav = False
+    
+    # Immediate rerun without waiting for database save
     st.rerun()
 
 # =============== FIXED: QUERY PARAMETER PROCESSING ===============
@@ -446,6 +461,8 @@ if "search_query" not in st.session_state:
     st.session_state.search_query = ""
 if "confirm_delete" not in st.session_state:
     st.session_state.confirm_delete = None
+if "quick_nav" not in st.session_state:
+    st.session_state.quick_nav = False
 
 # Load persistent session data
 load_session_from_db()
@@ -816,66 +833,26 @@ elif st.session_state.page == "Admin Dashboard" and st.session_state.role == "ad
             font-size: 14px !important;
             padding: 8px !important;
         }
+        
+        /* Reduce padding for mobile */
+        .main .block-container {
+            padding-top: 1rem !important;
+            padding-bottom: 1rem !important;
+        }
     }
     
-    /* DELETE BUTTON STYLING - NO BACKGROUND, NO BORDER, NO PADDING */
-    .delete-button {
-        background: transparent !important;
-        border: none !important;
-        padding: 0 !important;
-        margin: 0 !important;
-        min-width: auto !important;
-        width: auto !important;
-        color: #ff4444 !important;
-        font-size: 20px !important;
-        box-shadow: none !important;
+    /* OPTIMIZED BUTTON STYLES FOR FASTER RENDERING */
+    .stButton > button {
+        transition: none !important; /* Remove transitions for faster response */
     }
     
-    .delete-button:hover {
-        background: transparent !important;
-        color: #ff0000 !important;
-        transform: scale(1.1);
-    }
-    
-    /* SONG LIST ITEMS - CLEAN LAYOUT */
+    /* SONG LIST ITEMS - OPTIMIZED FOR SPEED */
     .song-item-row {
         display: flex;
         align-items: center;
         margin-bottom: 4px !important;
         padding: 0 !important;
         background: transparent !important;
-    }
-    
-    /* PLAY BUTTON STYLING */
-    .play-button {
-        background: transparent !important;
-        border: none !important;
-        color: #4CAF50 !important;
-        text-align: left !important;
-        padding: 0 !important;
-        margin: 0 !important;
-        width: 100% !important;
-    }
-    
-    .play-button:hover {
-        background: rgba(76, 175, 80, 0.1) !important;
-    }
-    
-    /* SHARE BUTTON STYLING */
-    .share-link-button {
-        background: transparent !important;
-        border: none !important;
-        padding: 0 !important;
-        margin: 0 !important;
-        min-width: auto !important;
-        width: auto !important;
-        color: #667eea !important;
-        font-size: 20px !important;
-    }
-    
-    .share-link-button:hover {
-        color: #764ba2 !important;
-        transform: scale(1.1);
     }
     </style>
     """, unsafe_allow_html=True)
@@ -984,13 +961,13 @@ elif st.session_state.page == "Admin Dashboard" and st.session_state.role == "ad
             else:
                 st.warning("❌ No songs uploaded yet.")
         else:
-            # Clean layout with minimal styling
+            # OPTIMIZED: Display songs with minimal buttons for faster loading
             for idx, s in enumerate(uploaded_songs):
                 # Create columns for each song
                 col1, col2, col3 = st.columns([3, 1, 1])
                 
                 with col1:
-                    # Clickable song name - simple text
+                    # Fast clickable song name - optimized
                     if st.button(
                         f"🎶 {s}",
                         key=f"song_name_{s}_{idx}",
@@ -1001,7 +978,7 @@ elif st.session_state.page == "Admin Dashboard" and st.session_state.role == "ad
                         open_song_player(s)
                 
                 with col2:
-                    # Share link icon - using button with emoji
+                    # Share link icon
                     safe_s = quote(s)
                     share_url = f"{APP_URL}?song={safe_s}"
                     if st.button(
@@ -1013,7 +990,7 @@ elif st.session_state.page == "Admin Dashboard" and st.session_state.role == "ad
                         st.info("Link copied to clipboard!")
                 
                 with col3:
-                    # Delete button - simple trash icon with minimal styling
+                    # Delete button
                     if st.button(
                         "🗑️",
                         key=f"delete_{s}_{idx}",
@@ -1186,25 +1163,19 @@ elif st.session_state.page == "User Dashboard" and st.session_state.role == "use
             font-size: 14px !important;
             padding: 8px !important;
         }
+        
+        /* Reduce padding for mobile */
+        .main .block-container {
+            padding-top: 1rem !important;
+            padding-bottom: 1rem !important;
+        }
     }
     
-    /* CLICKABLE SONG NAMES - NO BACKGROUND, NO BORDERS */
-    .clickable-song {
-        cursor: pointer;
-        padding: 12px 8px;
-        transition: all 0.2s ease;
-        border-radius: 0px;
-        background: transparent !important;
-        border: none !important;
-        text-align: left;
-        width: 100%;
-        display: block;
-        margin: 0 !important;
-    }
-    
-    .clickable-song:hover {
-        background: rgba(255, 0, 102, 0.1) !important;
-        transform: translateX(5px);
+    /* OPTIMIZED CLICKABLE SONG NAMES */
+    .stButton > button[kind="secondary"] {
+        transition: none !important; /* Remove transition for faster response */
+        text-align: left !important;
+        padding: 10px !important;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -1260,9 +1231,9 @@ elif st.session_state.page == "User Dashboard" and st.session_state.role == "use
             st.warning("❌ No shared songs available. Contact admin to share songs.")
             st.info("👑 Only admin-shared songs appear here for users.")
     else:
-        # Simple list display
+        # OPTIMIZED: Simple list display with fast buttons
         for idx, song in enumerate(uploaded_songs):
-            # Clickable song name
+            # Fast clickable song name
             if st.button(
                 f"✅ *{song}*",
                 key=f"user_song_{song}_{idx}",
@@ -1829,21 +1800,3 @@ else:
         st.session_state.page = "Login"
     save_session_to_db()
     st.rerun()
-
-# =============== DEBUG INFO (Hidden by default) ===============
-with st.sidebar:
-    if st.session_state.get("role") == "admin":
-        if st.checkbox("Show Debug Info", key="debug_toggle"):
-            st.write("### Debug Info")
-            st.write(f"Page: {st.session_state.get('page')}")
-            st.write(f"User: {st.session_state.get('user')}")
-            st.write(f"Role: {st.session_state.get('role')}")
-            st.write(f"Selected Song: {st.session_state.get('selected_song')}")
-            st.write(f"Query Params: {dict(st.query_params)}")
-            
-            if st.button("Force Reset", key="debug_reset"):
-                for key in list(st.session_state.keys()):
-                    del st.session_state[key]
-                st.session_state.page = "Login"
-                save_session_to_db()
-                st.rerun()
